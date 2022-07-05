@@ -49,6 +49,7 @@ func uninstall_from_local() error {
 func install(self string) {
 	if err := install_to_local(self); err != nil {
 		fmt.Printf("failed to install: %s\n", err.Error())
+		return
 	}
 
 	fmt.Println("wire installed")
@@ -57,6 +58,7 @@ func install(self string) {
 func uninstall() {
 	if err := uninstall_from_local(); err != nil {
 		fmt.Printf("failed to uninstall: %s\n", err.Error())
+		return
 	}
 
 	fmt.Println("wire uninstalled")

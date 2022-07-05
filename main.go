@@ -58,9 +58,9 @@ func format_elapsed(ms float64) string {
 	} else if ms < 1000.0 {
 		return fmt.Sprintf("%.1fms", ms)
 	} else if ms < 60000.0 {
-		return fmt.Sprintf("%.3fs\n", ms/1000.0)
+		return fmt.Sprintf("%.3fs", ms/1000.0)
 	} else {
-		return fmt.Sprintf("%.3fm\n", ms/60000.0)
+		return fmt.Sprintf("%.3fm", ms/60000.0)
 	}
 }
 
@@ -132,7 +132,7 @@ func read_header(reader *bufio.Reader) (file_size int64, path string, err error)
 
 func read_into_channel(reader *bufio.Reader, size int64, channel chan []byte) (err error) {
 	//read `size` bytes from the Reader into the channel
-	//	data will be consumed concurrently by write_from_channel
+	//    data will be consumed concurrently by write_from_channel
 	total := int64(0)
 	var n int
 	for {
@@ -227,7 +227,7 @@ func write_file_from_channel(path string, size int64, channel chan []byte) {
 	f.Close()
 	if err != nil {
 		//error during transfer, delete the (malformed) file
-		//	network errors will be signalled by a nil on the channel (caught as "link terminated")
+		//    network errors will be signalled by a nil on the channel (caught as "link terminated")
 		os.Remove(path)
 	}
 }
@@ -242,7 +242,7 @@ func read_file_onto_channel(channel chan []byte, path, name string) (size int64,
 	go read_file(path, file_size, channel)
 
 	//return the number of bytes that will be writted to channel (and need to be read)
-	//	file_size excludes the header size so add it
+	//    file_size excludes the header size so add it
 	return header_size + file_size, nil
 }
 
@@ -266,7 +266,8 @@ func send_folder(writer *bufio.Writer, base string) error {
 	channel := make(chan []byte, 10)
 
 	parent := filepath.Dir(base)
-	filepath.WalkDir(base, func(path string, info os.DirEntry, err error) error {
+
+	err := filepath.WalkDir(base, func(path string, info os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -275,7 +276,7 @@ func send_folder(writer *bufio.Writer, base string) error {
 			start := time.Now().UnixMicro()
 
 			//keep the top level folder
-			//	if sending '/very/cool/folder' then our peer will receive 'folder' etc
+			//    if sending '/very/cool/folder' then our peer will receive 'folder' etc
 			rel, _ := filepath.Rel(parent, path)
 
 			//spin up a goroutine to read the file in the background
@@ -291,12 +292,12 @@ func send_folder(writer *bufio.Writer, base string) error {
 			}
 
 			elapsed := float64(time.Now().UnixMicro()-start) / 1000.0
-			fmt.Printf("%s %s\n", path, format_elapsed(elapsed))
+			fmt.Printf("%s %s\n", rel, format_elapsed(elapsed))
 		}
 		return nil
 	})
 
-	return nil
+	return err
 
 }
 
@@ -419,7 +420,7 @@ func find_link_local_address() (ip string, i net.Interface, err error) {
 	for _, i := range ifaces {
 		name := strings.ToLower(i.Name)
 		//guess if an interface is ethernet by looking at its name
-		//	windows has "Ethernet #", linux has "eth#" or "enp###"
+		//    windows has "Ethernet #", linux has "eth#" or "enp###"
 		if strings.HasPrefix(name, "eth") || strings.HasPrefix(name, "enp") {
 			addrs, _ := i.Addrs()
 			for _, a := range addrs {
