@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 )
 
+//assume this is in PATH, may not be
+var LOCAL_BIN = ".local/bin"
+
 func terminate() {
 	os.Exit(1)
 }
@@ -19,7 +22,7 @@ func install_to_local(self string) error {
 		return err
 	}
 
-	file := filepath.Join(home, ".local/bin/wire")
+	file := filepath.Join(home, LOCAL_BIN+"/wire")
 
 	if err = copy_file(self, file); err != nil {
 		return err
@@ -34,7 +37,7 @@ func uninstall_from_local() error {
 		return err
 	}
 
-	file := filepath.Join(home, ".local/bin/wire")
+	file := filepath.Join(home, LOCAL_BIN+"/wire")
 
 	if err = os.Remove(file); err != nil {
 		return err
@@ -49,7 +52,6 @@ func install(self string) {
 	}
 
 	fmt.Println("wire installed")
-	return
 }
 
 func uninstall() {
@@ -58,5 +60,4 @@ func uninstall() {
 	}
 
 	fmt.Println("wire uninstalled")
-	return
 }

@@ -65,6 +65,10 @@ func format_elapsed(ms float64) string {
 }
 
 func build_header(path, name string) (header []byte, header_size int64, file_size int64, err error) {
+	//header format {file_size uint64, name_size uint16, name string}
+	//file_size excludes the header
+
+	//convert to unix style paths
 	name = filepath.ToSlash(name)
 
 	name_size := len(name)
@@ -86,11 +90,11 @@ func build_header(path, name string) (header []byte, header_size int64, file_siz
 	return header, header_size, file_size, nil
 }
 
-func read_all(b *bufio.Reader, data []byte) error {
+func read_into_buffer(reader *bufio.Reader, buffer []byte) error {
 	total := 0
-	len := len(data)
+	len := len(buffer)
 	for total != len {
-		n, err := b.Read(data[total:])
+		n, err := reader.Read(buffer[total:])
 		if err != nil {
 			return err
 		}
@@ -99,10 +103,11 @@ func read_all(b *bufio.Reader, data []byte) error {
 	return nil
 }
 
-func read_header(b *bufio.Reader) (file_size int64, path string, err error) {
+func read_header(reader *bufio.Reader) (file_size int64, path string, err error) {
+	//see build_header
 	header := make([]byte, 10)
 
-	err = read_all(b, header)
+	err = read_into_buffer(reader, header)
 	if err != nil {
 		return 0, "", err
 	}
@@ -112,25 +117,29 @@ func read_header(b *bufio.Reader) (file_size int64, path string, err error) {
 
 	path_data := make([]byte, path_size)
 
-	err = read_all(b, path_data)
+	err = read_into_buffer(reader, path_data)
 	if err != nil {
 		return 0, "", err
 	}
 
 	path = string(path_data)
 
+	//header uses unix style paths, if on windows this will convert back
 	path = filepath.FromSlash(path)
 
 	return file_size, path, nil
 }
 
-func read_into_channel(b *bufio.Reader, size int64, c chan []byte) (err error) {
+func read_into_channel(reader *bufio.Reader, size int64, channel chan []byte) (err error) {
+	//read `size` bytes from the Reader into the channel
+	//	data will be consumed concurrently by write_from_channel
 	total := int64(0)
 	var n int
 	for {
 		buffer := make([]byte, min(CHUNK_SIZE, size-total))
-		n, err = b.Read(buffer[:])
+		n, err = reader.Read(buffer[:])
 		if err == io.EOF {
+			//connection ended early (total < size)
 			return fmt.Errorf("link terminated")
 		}
 		if err != nil {
@@ -138,25 +147,31 @@ func read_into_channel(b *bufio.Reader, size int64, c chan []byte) (err error) {
 		}
 
 		total += int64(n)
-		c <- buffer[:n]
+		channel <- buffer[:n]
 
 		if total == size {
 			return nil
 		}
+
+		if total > size {
+			//should never happen
+			return fmt.Errorf("reader misaligned")
+		}
 	}
 }
 
-func write_from_channel(b *bufio.Writer, size int64, c chan []byte) (err error) {
-	defer b.Flush()
+func write_from_channel(writer *bufio.Writer, size int64, channel chan []byte) (err error) {
+	defer writer.Flush()
 	total := int64(0)
 	for {
-		chunk := <-c
+		chunk := <-channel
 
 		if chunk == nil {
+			//signaled by the producer that theres an error
 			return fmt.Errorf("link terminated")
 		}
 
-		_, err = b.Write(chunk)
+		_, err = writer.Write(chunk)
 		if err != nil {
 			return err
 		}
@@ -165,19 +180,25 @@ func write_from_channel(b *bufio.Writer, size int64, c chan []byte) (err error) 
 		if total == size {
 			return nil
 		}
+
+		if total > size {
+			//channel should aligned (in read_into_channel) so different files dont overlap
+			return fmt.Errorf("channel misaligned")
+		}
 	}
 }
 
-func read_file(path string, size int64, c chan []byte) {
+func read_file(path string, size int64, channel chan []byte) {
+	//open the file and read `size` bytes of data onto the channel
 	f, err := os.Open(path)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	b := bufio.NewReader(f)
+	reader := bufio.NewReader(f)
 
-	err = read_into_channel(b, size, c)
+	err = read_into_channel(reader, size, channel)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -185,7 +206,8 @@ func read_file(path string, size int64, c chan []byte) {
 	f.Close()
 }
 
-func write_file(path string, size int64, c chan []byte) {
+func write_file_from_channel(path string, size int64, channel chan []byte) {
+	//creates the full directory structure if it doesnt exist
 	err := os.MkdirAll(filepath.Dir(path), os.ModePerm)
 	if err != nil {
 		fmt.Println(err)
@@ -197,41 +219,52 @@ func write_file(path string, size int64, c chan []byte) {
 		fmt.Println(err)
 		return
 	}
-	defer f.Close()
 
-	b := bufio.NewWriter(f)
+	writer := bufio.NewWriter(f)
 
-	err = write_from_channel(b, size, c)
+	err = write_from_channel(writer, size, channel)
+
+	f.Close()
 	if err != nil {
-		//error during tranfer, delete the file
+		//error during transfer, delete the (malformed) file
+		//	network errors will be signalled by a nil on the channel (caught as "link terminated")
 		os.Remove(path)
 	}
 }
 
-func read_file_onto_channel(c chan []byte, path, name string) (size int64, err error) {
+func read_file_onto_channel(channel chan []byte, path, name string) (size int64, err error) {
 	header, header_size, file_size, err := build_header(path, name)
 	if err != nil {
 		return 0, err
 	}
-	c <- header[:]
+	channel <- header[:]
 
-	go read_file(path, file_size, c)
+	go read_file(path, file_size, channel)
 
+	//return the number of bytes that will be writted to channel (and need to be read)
+	//	file_size excludes the header size so add it
 	return header_size + file_size, nil
 }
 
-func send_file(b *bufio.Writer, path, name string) error {
+func send_file(writer *bufio.Writer, path, name string) error {
 	fmt.Println(name)
 	data := make(chan []byte, 10)
+
+	//non-blocking, starts a goroutine to read in the background
 	size, err := read_file_onto_channel(data, path, name)
 	if err != nil {
 		return err
 	}
-	return write_from_channel(b, size, data)
+
+	//blocks until file sent or errored
+	return write_from_channel(writer, size, data)
 }
 
-func send_folder(b *bufio.Writer, base string) error {
-	data := make(chan []byte, 10)
+func send_folder(writer *bufio.Writer, base string) error {
+	//send files sequentially over a single connection via a single channel
+	//disk and network IO is done concurrently
+	channel := make(chan []byte, 10)
+
 	parent := filepath.Dir(base)
 	filepath.WalkDir(base, func(path string, info os.DirEntry, err error) error {
 		if err != nil {
@@ -240,12 +273,19 @@ func send_folder(b *bufio.Writer, base string) error {
 
 		if !info.IsDir() {
 			start := time.Now().UnixMicro()
+
+			//keep the top level folder
+			//	if sending '/very/cool/folder' then our peer will receive 'folder' etc
 			rel, _ := filepath.Rel(parent, path)
-			size, err := read_file_onto_channel(data, path, rel)
+
+			//spin up a goroutine to read the file in the background
+			size, err := read_file_onto_channel(channel, path, rel)
 			if err != nil {
 				return err
 			}
-			err = write_from_channel(b, size, data)
+
+			//send the data concurrently to reading it
+			err = write_from_channel(writer, size, channel)
 			if err != nil {
 				return err
 			}
@@ -261,6 +301,7 @@ func send_folder(b *bufio.Writer, base string) error {
 }
 
 func expand_paths(paths []string) []string {
+	//expand wildcards in the arguments etc
 	out := make([]string, 0)
 	for _, path := range paths {
 		matches, err := filepath.Glob(path)
@@ -276,8 +317,8 @@ func expand_paths(paths []string) []string {
 func send(paths []string, local, remote string) {
 	var err error
 
-	raddr, _ := net.ResolveTCPAddr("tcp6", fmt.Sprintf("%s:%d", remote, DATA_PORT))
-	laddr, _ := net.ResolveTCPAddr("tcp6", fmt.Sprintf("%s:%d", local, DATA_PORT))
+	raddr, _ := net.ResolveTCPAddr("tcp6", fmt.Sprintf("[%s]:%d", remote, DATA_PORT))
+	laddr, _ := net.ResolveTCPAddr("tcp6", fmt.Sprintf("[%s]:%d", local, DATA_PORT))
 	laddr.Port = 0 //OS will assign a random port
 
 	conn, err := net.DialTCP("tcp6", laddr, raddr)
@@ -287,7 +328,7 @@ func send(paths []string, local, remote string) {
 	}
 	defer conn.Close()
 
-	b := bufio.NewWriter(conn)
+	writer := bufio.NewWriter(conn)
 
 	//expand wildcards for windows because its shit
 	paths = expand_paths(paths)
@@ -300,9 +341,9 @@ func send(paths []string, local, remote string) {
 		is_dir := i.IsDir()
 
 		if !is_dir {
-			err = send_file(b, path, i.Name())
+			err = send_file(writer, path, i.Name())
 		} else {
-			err = send_folder(b, path)
+			err = send_folder(writer, path)
 		}
 
 		if err != nil {
@@ -318,13 +359,15 @@ func send(paths []string, local, remote string) {
 }
 
 func read_files(conn net.Conn) {
+	//read all files off the connection until it is closed
+	//non-errored connections terminate with read_header returning EOF
 	defer conn.Close()
-	data := make(chan []byte, 10)
+	channel := make(chan []byte, 10)
 
-	b := bufio.NewReader(conn)
+	reader := bufio.NewReader(conn)
 
 	for {
-		size, path, err := read_header(b)
+		size, path, err := read_header(reader)
 		if err == io.EOF {
 			return
 		} else if err != nil {
@@ -334,11 +377,12 @@ func read_files(conn net.Conn) {
 
 		start := time.Now().UnixMicro()
 
-		go write_file(path, size, data)
+		go write_file_from_channel(path, size, channel)
 
-		err = read_into_channel(b, size, data)
+		err = read_into_channel(reader, size, channel)
 		if err != nil {
-			data <- nil
+			//networking error encountered, signal an error to write_file
+			channel <- nil
 			fmt.Printf("%s FAILED\n", path)
 			return
 		}
@@ -350,7 +394,7 @@ func read_files(conn net.Conn) {
 }
 
 func receive(local string) {
-	ln, err := net.Listen("tcp6", fmt.Sprintf("%s:%d", local, DATA_PORT))
+	ln, err := net.Listen("tcp6", fmt.Sprintf("[%s]:%d", local, DATA_PORT))
 	if err != nil {
 		fmt.Println(err)
 		terminate()
@@ -366,6 +410,7 @@ func receive(local string) {
 }
 
 func find_link_local_address() (ip string, i net.Interface, err error) {
+	//find an interface that looks like ethernet and has an ipv6 link local address
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", i, err
@@ -373,12 +418,16 @@ func find_link_local_address() (ip string, i net.Interface, err error) {
 
 	for _, i := range ifaces {
 		name := strings.ToLower(i.Name)
+		//guess if an interface is ethernet by looking at its name
+		//	windows has "Ethernet #", linux has "eth#" or "enp###"
 		if strings.HasPrefix(name, "eth") || strings.HasPrefix(name, "enp") {
 			addrs, _ := i.Addrs()
 			for _, a := range addrs {
 				ip := net.ParseIP(strings.Split(a.String(), "/")[0])
+
+				//if its link local and ipv6 then use it
 				if ip.IsLinkLocalUnicast() && strings.Contains(ip.String(), ":") {
-					return fmt.Sprintf("[%s%%%d]", ip.String(), i.Index), i, nil
+					return fmt.Sprintf("%s%%%d", ip.String(), i.Index), i, nil
 				}
 			}
 		}
@@ -387,11 +436,12 @@ func find_link_local_address() (ip string, i net.Interface, err error) {
 }
 
 var MULTICAST string = "ff02::1"
-var MULTICAST_L string = "[ff02::1]"
 var REQUEST = "REQUEST"
 
-func bind_multicast(local string, port int, i net.Interface) (conn *ipv6.PacketConn) {
-	c, err := net.ListenPacket("udp6", fmt.Sprintf("%s:%d", local, port))
+func bind_multicast(address string, port int, i net.Interface) (conn *ipv6.PacketConn) {
+	//bind to address:port and join the link-local multicast group
+
+	c, err := net.ListenPacket("udp6", fmt.Sprintf("[%s]:%d", address, port))
 	if err != nil {
 		fmt.Println(err.Error())
 		terminate()
@@ -409,33 +459,40 @@ func bind_multicast(local string, port int, i net.Interface) (conn *ipv6.PacketC
 }
 
 func responder(local string, i net.Interface) {
-	r := bind_multicast(MULTICAST_L, RECV_PORT, i)
+	//to recieve a multicast we need to bind to the multicast address
+	//to send a multicast we need to bind to the link local address
+	r := bind_multicast(MULTICAST, RECV_PORT, i)
 	s := bind_multicast(local, SEND_PORT, i)
 
 	data := make([]byte, 64)
 
-	multicast := &net.UDPAddr{IP: net.ParseIP(MULTICAST), Port: RECV_PORT + 1}
+	//multicast to our peer thats currently in discover mode
+	destination := &net.UDPAddr{IP: net.ParseIP(MULTICAST), Port: RECV_PORT + 1}
 
-	local_ip := strings.Split(local[1:len(local)-1], "%")[0]
+	//strip the zone identifier (peer will add their own)
+	local_ip := strings.Split(local, "%")[0]
 
 	for {
-		r.ReadFrom(data)
-		s.WriteTo([]byte(local_ip), nil, multicast)
+		r.ReadFrom(data) //blocks until a peer makes a connection
+		s.WriteTo([]byte(local_ip), nil, destination)
 	}
 }
 
 func discover(local string, i net.Interface) (remote string) {
-	r := bind_multicast(MULTICAST_L, RECV_PORT+1, i)
+	//use different ports to the responder so we can recieve and send concurrently
+	r := bind_multicast(MULTICAST, RECV_PORT+1, i)
 	s := bind_multicast(local, SEND_PORT+1, i)
 	defer r.Close()
 	defer s.Close()
 
-	multicast := &net.UDPAddr{IP: net.ParseIP(MULTICAST), Port: RECV_PORT}
+	//multicast to our peer who's currently in responder mode
+	destination := &net.UDPAddr{IP: net.ParseIP(MULTICAST), Port: RECV_PORT}
 
 	data := make([]byte, 64)
 
 	for {
-		s.WriteTo([]byte(REQUEST), nil, multicast)
+		s.WriteTo([]byte(REQUEST), nil, destination)
+		//keep sending requests every 100 milliseconds until we get a response
 		r.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
 		n, _, _, _ := r.ReadFrom(data)
 		if n != 0 {
@@ -444,20 +501,14 @@ func discover(local string, i net.Interface) (remote string) {
 		}
 	}
 
-	remote = string(data)
-
-	if remote == "REQUEST" {
-		fmt.Println("peer is in send mode")
-		terminate()
-	}
-
-	remote = fmt.Sprintf("[%s%%%d]", remote, i.Index)
+	//add our interfaces zone identifier since link-local addresses are routable over any interface
+	remote = fmt.Sprintf("%s%%%d", string(data), i.Index)
 
 	return remote
 }
 
 func help() {
-	fmt.Println("wire r\n\treceive mode\nwire s PATH\n\tsend PATH\nwire i\n\tinstall\nwire u\n\tuninstall")
+	fmt.Println("wire r\n\treceive mode\nwire s PATH...\n\tsend PATH/s\nwire i\n\tinstall\nwire u\n\tuninstall")
 }
 
 func main() {
@@ -477,6 +528,8 @@ func main() {
 	command := args[0]
 	paths := args[1:]
 
+	//should always find an address if theres an ethernet interface with ipv6 enabled (and its up)
+	//unlike ipv4, ipv6 has mandatory link-local address and are stateless (derived from the physical address)
 	local, link, err := find_link_local_address()
 	if err != nil {
 		fmt.Println(err.Error())
