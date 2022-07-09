@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -306,7 +307,7 @@ func expand_paths(paths []string) []string {
 	out := make([]string, 0)
 	for _, path := range paths {
 		matches, err := filepath.Glob(path)
-		if err != nil {
+		if err != nil || len(matches) == 0 {
 			out = append(out, path)
 		} else {
 			out = append(out, matches...)
@@ -335,7 +336,8 @@ func send(paths []string, local, remote string) {
 	paths = expand_paths(paths)
 
 	for _, path := range paths {
-		i, err := os.Stat(path)
+		var i fs.FileInfo
+		i, err = os.Stat(path)
 		if err != nil {
 			break
 		}
