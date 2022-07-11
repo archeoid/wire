@@ -227,6 +227,7 @@ func write_file_from_channel(path string, size int64, channel chan []byte) {
 
 	f.Close()
 	if err != nil {
+		fmt.Println(err.Error())
 		//error during transfer, delete the (malformed) file
 		//    network errors will be signalled by a nil on the channel (caught as "link terminated")
 		os.Remove(path)
@@ -365,7 +366,7 @@ func read_files(conn net.Conn) {
 	//read all files off the connection until it is closed
 	//non-errored connections terminate with read_header returning EOF
 	defer conn.Close()
-	channel := make(chan []byte, 10)
+	channel := make(chan []byte)
 
 	reader := bufio.NewReader(conn)
 
