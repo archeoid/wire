@@ -7,7 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
+
+func GetTime() int64 {
+	return int64(time.Now().Nanosecond())
+}
 
 //assume this is in PATH, may not be
 var LOCAL_BIN = ".local/bin"

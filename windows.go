@@ -8,8 +8,23 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
+
+func GetTime() int64 {
+	var t windows.Filetime
+	windows.GetSystemTimePreciseAsFileTime(&t)
+	return t.Nanoseconds()
+}
+
+func init() {
+	stdout := windows.Handle(os.Stdout.Fd())
+	var originalMode uint32
+
+	windows.GetConsoleMode(stdout, &originalMode)
+	windows.SetConsoleMode(stdout, originalMode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+}
 
 func install_to_appdata(self string) error {
 	home, err := os.UserHomeDir()
