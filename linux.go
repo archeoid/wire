@@ -11,7 +11,7 @@ import (
 )
 
 func GetTime() int64 {
-	return int64(time.Now().Nanosecond())
+	return time.Now().UnixNano()
 }
 
 //assume this is in PATH, may not be

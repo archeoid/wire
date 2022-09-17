@@ -61,6 +61,7 @@ func read_file_onto_channel(channel chan []byte, path, name string) (size int64,
 func send_file(writer *bufio.Writer, path, name string) error {
 	fmt.Println(name)
 	data := make(chan []byte, 10)
+	guard.Lock()
 
 	//non-blocking, starts a goroutine to read in the background
 	size, err := read_file_onto_channel(data, path, name)

@@ -45,7 +45,6 @@ func main() {
 			terminate()
 		}
 		remote := discover(local, link)
-		fmt.Println(remote)
 		send(paths, local, remote)
 	case "r":
 		if len(paths) != 0 {
