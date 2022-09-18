@@ -9,6 +9,11 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
+var DISCOVERY_SEND_PORT = 42070
+var DISCOVERY_RECV_PORT = 42072
+var MULTICAST string = "ff02::1"
+var REQUEST = "REQUEST"
+
 func find_link_local_address() (ip string, i net.Interface, err error) {
 	//find an interface that looks like ethernet and has an ipv6 link local address
 	ifaces, err := net.Interfaces()
@@ -40,7 +45,7 @@ func bind_multicast(address string, port int, i net.Interface) (conn *ipv6.Packe
 
 	c, err := net.ListenPacket("udp6", fmt.Sprintf("[%s]:%d", address, port))
 	if err != nil {
-		fmt.Println(err.Error())
+		show_error(err, "listen failed (multicast)")
 		terminate()
 	}
 
@@ -58,13 +63,13 @@ func bind_multicast(address string, port int, i net.Interface) (conn *ipv6.Packe
 func responder(local string, i net.Interface) {
 	//to recieve a multicast we need to bind to the multicast address
 	//to send a multicast we need to bind to the link local address
-	r := bind_multicast(MULTICAST, RECV_PORT, i)
-	s := bind_multicast(local, SEND_PORT, i)
+	r := bind_multicast(MULTICAST, DISCOVERY_RECV_PORT, i)
+	s := bind_multicast(local, DISCOVERY_SEND_PORT, i)
 
 	data := make([]byte, 64)
 
 	//multicast to our peer thats currently in discover mode
-	destination := &net.UDPAddr{IP: net.ParseIP(MULTICAST), Port: RECV_PORT + 1}
+	destination := &net.UDPAddr{IP: net.ParseIP(MULTICAST), Port: DISCOVERY_RECV_PORT + 1}
 
 	//strip the zone identifier (peer will add their own)
 	local_ip := strings.Split(local, "%")[0]
@@ -77,13 +82,13 @@ func responder(local string, i net.Interface) {
 
 func discover(local string, i net.Interface) (remote string) {
 	//use different ports to the responder so we can recieve and send concurrently
-	r := bind_multicast(MULTICAST, RECV_PORT+1, i)
-	s := bind_multicast(local, SEND_PORT+1, i)
+	r := bind_multicast(MULTICAST, DISCOVERY_RECV_PORT+1, i)
+	s := bind_multicast(local, DISCOVERY_SEND_PORT+1, i)
 	defer r.Close()
 	defer s.Close()
 
 	//multicast to our peer who's currently in responder mode
-	destination := &net.UDPAddr{IP: net.ParseIP(MULTICAST), Port: RECV_PORT}
+	destination := &net.UDPAddr{IP: net.ParseIP(MULTICAST), Port: DISCOVERY_RECV_PORT}
 
 	data := make([]byte, 64)
 

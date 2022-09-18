@@ -5,89 +5,135 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"path/filepath"
+	"sync"
+	"time"
 )
 
-func write_file_from_channel(path string, size int64, channel chan []byte) {
-	//creates the full directory structure if it doesnt exist
-	err := os.MkdirAll(filepath.Dir(path), os.ModePerm)
-	if err != nil {
-		fmt.Println(err)
-		return
+var connections int = 0
+var guard sync.Mutex
+
+func receive_display_progress(t transfer) {
+	// fancy display showing progress
+	// only suitable for 1 connection sending 1 file at a time
+
+	progress := float64(t.progress) / float64(t.size)
+
+	fmt.Printf("\033[G\033[J%s ", t.name)
+
+	if t.progress != t.size {
+		set_progress_color(progress)
+		fmt.Printf("%5.1f%%", 100.0*progress)
+		reset_color()
 	}
-
-	f, err := os.Create(path)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	writer := bufio.NewWriter(f)
-
-	err = write_from_channel(writer, size, channel)
-
-	f.Close()
-	if err != nil {
-		fmt.Println(err.Error())
-		//error during transfer, delete the (malformed) file
-		//    network errors will be signalled by a nil on the channel (caught as "link terminated")
-		os.Remove(path)
-	}
-}
-
-func read_files(conn net.Conn) {
-	//read all files off the connection until it is closed
-	//non-errored connections terminate with read_header returning EOF
-	defer conn.Close()
-	channel := make(chan []byte)
-
-	reader := bufio.NewReader(conn)
-
-	for {
-		size, path, err := read_header(reader)
-		if err == io.EOF {
-			return
-		} else if err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		start := GetTime()
-
-		go write_file_from_channel(path, size, channel)
-
-		err = read_into_channel(reader, size, channel, false)
-		if err != nil {
-			//networking error encountered, signal an error to write_file
-			channel <- nil
-			fmt.Printf("%s FAILED\n", path)
-			return
-		}
-
-		elapsed := float64(GetTime()-start) / 1000000.0
-
-		guard.Lock()
-		fmt.Printf("%s ", path)
+	if t.progress == t.size {
+		elapsed := float64(get_time()-t.start) / 1000000.0
 		set_timing_color(elapsed)
 		fmt.Printf("%s\n", format_elapsed(elapsed))
 		reset_color()
-		guard.Unlock()
 	}
 }
 
-func receive(local string) {
-	ln, err := net.Listen("tcp6", fmt.Sprintf("[%s]:%d", local, DATA_PORT))
+func receive_display_basic(t transfer) {
+	// basic display for multiple concurrent connections
+	// need to guard terminal output to avoid mangling text
+
+	guard.Lock()
+	defer guard.Unlock()
+
+	if t.progress == t.size {
+		fmt.Printf("%s ", t.name)
+		elapsed := float64(get_time()-t.start) / 1000000.0
+		set_timing_color(elapsed)
+		fmt.Printf("%s\n", format_elapsed(elapsed))
+		reset_color()
+	}
+}
+
+func receive_display(t transfer) {
+	if connections == 1 {
+		receive_display_progress(t)
+	} else {
+		receive_display_basic(t)
+	}
+}
+
+func add_connection_display() {
+	guard.Lock()
+	defer guard.Unlock()
+
+	prev := connections
+	connections++
+	if prev == 1 {
+		title_color()
+		fmt.Printf("\033[G\033[JSWITCHING TO BASIC DISPLAY\n")
+		reset_color()
+	}
+}
+
+func remove_connection_display() {
+	guard.Lock()
+	defer guard.Unlock()
+
+	prev := connections
+	connections--
+	if prev == 2 {
+		title_color()
+		fmt.Printf("\033[G\033[JSWITCHING TO PROGESS DISPLAY\n")
+		reset_color()
+	}
+}
+
+func receive_all(conn net.Conn) error {
+	var err error
+	reader := bufio.NewReader(conn)
+	add_connection_display()
+
+	for {
+		if _, err = reader.Peek(1); err != nil {
+			break
+		}
+
+		var t transfer
+		if t, err = from_wire(reader); err != nil {
+			break
+		}
+
+		if err = to_disk(reader, t, receive_display); err != nil {
+			break
+		}
+	}
+
+	if err == io.EOF {
+		err = nil
+	}
+
 	if err != nil {
-		fmt.Println(err)
+		if connections == 1 {
+			fmt.Println()
+		}
+		show_error(err, "FAIL")
+	}
+
+	remove_connection_display()
+	return err
+}
+
+func receive(local string) {
+	addr, _ := net.ResolveTCPAddr("tcp6", fmt.Sprintf("[%s]:%d", local, DATA_PORT))
+	ln, err := net.ListenTCP("tcp6", addr)
+	if err != nil {
+		show_error(err, "listening failed")
 		terminate()
 	}
 	for {
-		conn, err := ln.Accept()
+		conn, err := ln.AcceptTCP()
 		if err != nil {
-			fmt.Println(err)
+			show_error(err, "accepting failed")
 			continue
 		}
-		go read_files(conn)
+		conn.SetKeepAlive(true)
+		conn.SetKeepAlivePeriod(time.Second)
+
+		go receive_all(conn)
 	}
 }

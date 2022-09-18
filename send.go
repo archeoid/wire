@@ -8,198 +8,152 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
-var guard sync.Mutex
-
-func read_file(path string, size int64, channel chan []byte) {
-	//open the file and read `size` bytes of data onto the channel
-
-	start := GetTime()
-
-	f, err := os.Open(path)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	reader := bufio.NewReader(f)
-
-	err = read_into_channel(reader, size, channel, true)
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	elapsed := float64(GetTime()-start) / 1000000.0
-
-	fmt.Print("\033[6D")
-	set_timing_color(elapsed)
-	fmt.Printf("%s", format_elapsed(elapsed))
-	fmt.Print("\033[0m\033[J")
-	fmt.Print("\n")
-
-	f.Close()
-
-	guard.Unlock()
+type queue struct {
+	pending []*transfer
+	total   int
 }
 
-func read_file_onto_channel(channel chan []byte, path, name string) (size int64, err error) {
-	header, header_size, file_size, err := build_header(path, name)
-	if err != nil {
-		return 0, err
-	}
-	channel <- header[:]
-
-	go read_file(path, file_size, channel)
-
-	//return the number of bytes that will be writted to channel (and need to be read)
-	//    file_size excludes the header size so add it
-	return header_size + file_size, nil
+func new_queue() queue {
+	var q queue
+	q.pending = make([]*transfer, 0)
+	return q
 }
 
-func send_file(writer *bufio.Writer, path, name string) error {
-	fmt.Println(name)
-	data := make(chan []byte, 10)
-	guard.Lock()
-
-	//non-blocking, starts a goroutine to read in the background
-	size, err := read_file_onto_channel(data, path, name)
-	if err != nil {
-		return err
-	}
-
-	//blocks until file sent or errored
-	return write_from_channel(writer, size, data)
+func (q *queue) enqueue_transfer(t *transfer) {
+	q.total++
+	t.number = q.total
+	t.q = q
+	q.pending = append(q.pending, t)
 }
 
-func send_folder(writer *bufio.Writer, base string) error {
-	//send files sequentially over a single connection via a single channel
-	//disk and network IO is done concurrently
-	channel := make(chan []byte, 2)
-
-	var total int = 0
-
-	parent := filepath.Dir(base)
-
-	//get total files
-	err := filepath.WalkDir(base, func(path string, info os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			total++
-		}
-		return nil
-	})
-
-	if err != nil {
-		return err
-	}
-
-	var number int = 0
-	var width int = int(math.Floor(math.Log10(float64(total))) + 1)
-
-	err = filepath.WalkDir(base, func(path string, info os.DirEntry, err error) error {
+func (q *queue) enqueue_folder(folder string) error {
+	parent := filepath.Dir(folder)
+	err := filepath.WalkDir(folder, func(path string, info os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
 		if !info.IsDir() {
-			number++
+			name, _ := filepath.Rel(parent, path)
 
-			//keep the top level folder
-			//    if sending '/very/cool/folder' then our peer will receive 'folder' etc
-			rel, _ := filepath.Rel(parent, path)
-
-			guard.Lock()
-			set_progress_color(float64(number) / float64(total))
-			fmt.Printf("[%*d/%*d] ", width, number, width, total)
-			reset_color()
-			fmt.Printf("%s   0.0%%", rel)
-
-			//spin up a goroutine to read the file in the background
-			size, err := read_file_onto_channel(channel, path, rel)
-			if err != nil {
-				return err
-			}
-
-			//send the data concurrently to reading it
-			err = write_from_channel(writer, size, channel)
-			if err != nil {
-				return err
-			}
+			t, _ := from_file(path, name)
+			q.enqueue_transfer(&t)
 		}
 		return nil
 	})
 
 	return err
-
 }
 
-func expand_path(path string) []string {
-	//expand wildcards in the arguments etc
-	out := make([]string, 0)
+func (q *queue) enqueue_path(path string) {
+	//expand any wildcards
+	paths := expand_path(path)
 
-	matches, err := filepath.Glob(path)
-	if err != nil || len(matches) == 0 {
-		out = append(out, path)
-	} else {
-		out = append(out, matches...)
-	}
-
-	return out
-}
-
-func expand_paths(paths []string) []string {
-	//expand wildcards in the arguments etc
-	out := make([]string, 0)
 	for _, path := range paths {
-		out = append(out, expand_path(path)...)
+		var i fs.FileInfo
+		i, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		is_dir := i.IsDir()
+
+		var t transfer
+		if !is_dir {
+			if t, err = from_file(path, i.Name()); err != nil {
+				continue
+			}
+			q.enqueue_transfer(&t)
+		} else {
+			q.enqueue_folder(path)
+		}
 	}
-	return out
 }
 
-func send(paths []string, local, remote string) {
+func send_display(t transfer) {
+	progress := float64(t.progress) / float64(t.size)
+
+	if t.progress == t.size {
+		fmt.Printf("\033[6D\033[A\033[J")
+	}
+
+	if t.progress == 0 || t.progress == t.size {
+		total_progress := float64(t.number) / float64(t.q.total)
+		width := int(math.Floor(math.Log10(float64(t.q.total))) + 1)
+
+		set_progress_color(total_progress)
+		fmt.Printf("[%*d/%*d] ", width, t.number, width, t.q.total)
+		reset_color()
+		fmt.Printf("%s", t.name)
+	}
+	if t.progress == 0 {
+		fmt.Println()
+	}
+	if t.progress != t.size {
+		set_progress_color(progress)
+		fmt.Printf("\033[6D%5.1f%%", 100.0*progress)
+		reset_color()
+	}
+	if t.progress == t.size {
+		elapsed := float64(get_time()-t.start) / 1000000.0
+		set_timing_color(elapsed)
+		fmt.Printf(" %s", format_elapsed(elapsed))
+		fmt.Print("\033[0m\n")
+	}
+}
+
+func send_display_basic(t transfer) {
+	if t.progress == 0 {
+		total_progress := float64(t.number) / float64(t.q.total)
+		width := int(math.Floor(math.Log10(float64(t.q.total))) + 1)
+
+		set_progress_color(total_progress)
+		fmt.Printf("[%*d/%*d] ", width, t.number, width, t.q.total)
+		reset_color()
+		fmt.Printf("%s", t.name)
+		fmt.Println()
+	}
+}
+
+func send(paths []string, local, remote string) error {
 	var err error
 
 	raddr, _ := net.ResolveTCPAddr("tcp6", fmt.Sprintf("[%s]:%d", remote, DATA_PORT))
 	laddr, _ := net.ResolveTCPAddr("tcp6", fmt.Sprintf("[%s]:%d", local, DATA_PORT))
-	laddr.Port = 0 //OS will assign a random port
+	laddr.Port = 0
 
 	conn, err := net.DialTCP("tcp6", laddr, raddr)
 	if err != nil {
-		fmt.Println(err)
+		show_error(err, "dial failed")
 		terminate()
 	}
 	defer conn.Close()
 
 	writer := bufio.NewWriter(conn)
 
-	//expand wildcards for windows because its shit
-	paths = expand_paths(paths)
+	q := new_queue()
 
 	for _, path := range paths {
-		var i fs.FileInfo
-		i, err = os.Stat(path)
-		if err != nil {
+		q.enqueue_path(path)
+	}
+
+	for _, p := range q.pending {
+		header := p.build_header()
+		if err = write_from_buffer(writer, header); err != nil {
 			break
 		}
-		is_dir := i.IsDir()
 
-		if !is_dir {
-			err = send_file(writer, path, i.Name())
-		} else {
-			err = send_folder(writer, path)
-		}
-
-		if err != nil {
+		if err = to_wire(writer, *p, send_display); err != nil {
 			break
 		}
+		writer.Flush()
 	}
 
 	if err != nil {
-		fmt.Println(err)
-		terminate()
+		fmt.Print("\033[6D\033[J")
+		show_error(err, "FAIL")
 	}
+
+	return nil
 }

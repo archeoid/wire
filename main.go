@@ -7,11 +7,6 @@ import (
 )
 
 var DATA_PORT = 42069
-var CHUNK_SIZE int = 1024 * 1024
-var SEND_PORT = 42070
-var RECV_PORT = 42072
-var MULTICAST string = "ff02::1"
-var REQUEST = "REQUEST"
 
 func main() {
 	self := os.Args[0]
@@ -34,14 +29,14 @@ func main() {
 	//unlike ipv4, ipv6 has mandatory link-local address and are stateless (derived from the physical address)
 	local, link, err := find_link_local_address()
 	if err != nil {
-		fmt.Println(err.Error())
+		show_error(err, "find link-local failed")
 		terminate()
 	}
 
 	switch command {
 	case "s":
 		if len(paths) == 0 {
-			fmt.Println("specify a file or folder")
+			show_error(nil, "specify a file or folder")
 			terminate()
 		}
 		remote := discover(local, link)
@@ -53,7 +48,8 @@ func main() {
 
 		wd, _ := os.Getwd()
 
-		fmt.Printf("\033[38;5;220mreceiving into %s...\033[0m\n", wd)
+		show_info(fmt.Sprintf("receiving into %s...", wd))
+
 		go responder(local, link)
 		receive(local)
 	case "i":

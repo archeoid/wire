@@ -4,13 +4,12 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 )
 
-func GetTime() int64 {
+func get_time() int64 {
 	return time.Now().UnixNano()
 }
 
@@ -53,18 +52,18 @@ func uninstall_from_local() error {
 
 func install(self string) {
 	if err := install_to_local(self); err != nil {
-		fmt.Printf("failed to install: %s\n", err.Error())
+		show_error(err, "failed to install")
 		return
 	}
 
-	fmt.Println("wire installed")
+	show_info("wire installed")
 }
 
 func uninstall() {
 	if err := uninstall_from_local(); err != nil {
-		fmt.Printf("failed to uninstall: %s\n", err.Error())
+		show_error(err, "failed to uninstall")
 		return
 	}
 
-	fmt.Println("wire uninstalled")
+	show_info("wire uninstalled")
 }

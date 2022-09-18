@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-func GetTime() int64 {
+func get_time() int64 {
 	var t windows.Filetime
 	windows.GetSystemTimePreciseAsFileTime(&t)
 	return t.Nanoseconds()
@@ -172,32 +172,32 @@ func uninstall_context_menu() error {
 
 func terminate() {
 	//keep the CMD window open so errors can be read
-	fmt.Println("Press enter to exit..")
+	show_info("Press enter to exit..")
 	fmt.Scanln()
 	os.Exit(1)
 }
 
 func install(self string) {
 	if err := install_to_appdata(self); err != nil {
-		fmt.Printf("failed to install: %s\n", err.Error())
+		show_error(err, "failed to install")
 		return
 	}
 	if err := install_context_menu(); err != nil {
-		fmt.Printf("failed to configure registry: %s\n", err.Error())
+		show_error(err, "failed to configure registry")
 		return
 	}
 
-	fmt.Println("wire installed")
+	show_info("wire installed")
 }
 
 func uninstall() {
 	if err := uninstall_from_appdata(); err != nil {
-		fmt.Printf("failed to uninstall: %s\n", err.Error())
+		show_error(err, "failed to uninstall")
 		return
 	}
 	if err := uninstall_context_menu(); err != nil {
-		fmt.Printf("failed to unconfigure registry: %s\n", err.Error())
+		show_error(err, "failed to unconfigure registry")
 		return
 	}
-	fmt.Println("wire uninstalled")
+	show_info("wire uninstalled")
 }
