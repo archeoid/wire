@@ -233,7 +233,7 @@ func show_info(info string) {
 }
 
 func help() {
-	show_info("wire r\n\treceive mode\nwire s PATH...\n\tsend PATH/s\nwire i\n\tinstall\nwire u\n\tuninstall")
+	show_info("wire r\n\treceive mode\nwire s PATH\n\tsend PATH/s\nwire wr OR wire ws\n\twireless modes\nwire i\n\tinstall\nwire u\n\tuninstall")
 }
 
 func copy_file(source, destination string) error {

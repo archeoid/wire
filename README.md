@@ -19,6 +19,8 @@ wire r PATH
     start a receive session in PATH or PWD if no PATH
 wire s ARGS
     send the files/folders in ARGS, can include patterns
+wire wr OR wire ws
+    wireless send/receive mode
 wire i
     install wire
     on windows this installs into %APPDATA%\Local\Programs

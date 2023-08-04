@@ -27,7 +27,14 @@ func main() {
 
 	//should always find an address if theres an ethernet interface with ipv6 enabled (and its up)
 	//unlike ipv4, ipv6 has mandatory link-local address and are stateless (derived from the physical address)
-	local, link, err := find_link_local_address()
+
+	wireless := false
+	if len(command) == 2 && command[0] == 'w' {
+		wireless = true
+		command = string(command[1])
+	}
+
+	local, link, err := find_link_local_address(wireless)
 	if err != nil {
 		show_error(err, "find link-local failed")
 		terminate()

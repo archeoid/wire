@@ -11,10 +11,10 @@ import (
 
 var DISCOVERY_SEND_PORT = 42070
 var DISCOVERY_RECV_PORT = 42072
-var MULTICAST string = "ff02::1"
+var MULTICAST string = "ff02::1:1001"
 var REQUEST = "REQUEST"
 
-func find_link_local_address() (ip string, i net.Interface, err error) {
+func find_link_local_address(wireless bool) (ip string, i net.Interface, err error) {
 	//find an interface that looks like ethernet and has an ipv6 link local address
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -25,7 +25,17 @@ func find_link_local_address() (ip string, i net.Interface, err error) {
 		name := strings.ToLower(i.Name)
 		//guess if an interface is ethernet by looking at its name
 		//    windows has "Ethernet #", linux has "eth#" or "enp###"
-		if strings.HasPrefix(name, "eth") || strings.HasPrefix(name, "enp") {
+		//for wireless
+		//    windows has "Wireless #", linux has "wlan#" or "wlp###"
+
+		valid := false
+		if wireless {
+			valid = (strings.HasPrefix(name, "wlan") || strings.HasPrefix(name, "wi"))
+		} else {
+			valid = (strings.HasPrefix(name, "eth") || strings.HasPrefix(name, "enp"))
+		}
+
+		if valid {
 			addrs, _ := i.Addrs()
 			for _, a := range addrs {
 				ip := net.ParseIP(strings.Split(a.String(), "/")[0])
@@ -37,7 +47,12 @@ func find_link_local_address() (ip string, i net.Interface, err error) {
 			}
 		}
 	}
-	return "", i, fmt.Errorf("ethernet interface not found")
+
+	if wireless {
+		return "", i, fmt.Errorf("wireless interface not found")
+	} else {
+		return "", i, fmt.Errorf("ethernet interface not found")
+	}
 }
 
 func bind_multicast(address string, port int, i net.Interface) (conn *ipv6.PacketConn) {
